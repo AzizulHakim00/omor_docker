@@ -57,7 +57,11 @@ jobs:
             ${{ env.IMAGE_NAME }}:latest2
             ${{ env.IMAGE_NAME }}:${{ github.sha }}
 
+  # Do not deploy two versions to EC2 simultaneously.
   deploy-ec2:
+    concurrency:
+      group: omor-docker-ec2
+      cancel-in-progress: false
     name: Deploy to AWS EC2 (optional)
     needs: build-and-push
     runs-on: ubuntu-latest
@@ -84,13 +88,33 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            set -e
+            set -eu
             IMAGE="${{ env.IMAGE_NAME }}:${{ github.sha }}"
+            PORT="${{ env.APP_PORT }}"
+            NAME="${{ env.CONTAINER_NAME }}"
+
+            # Download the new image before stopping the old application.
             docker pull "$IMAGE"
-            docker rm -f "${{ env.CONTAINER_NAME }}" 2>/dev/null || true
+
+            # One-time migration: remove the old container bound to this host
+            # port even if it was launched under a different container name.
+            # The port is reserved for this Spring Boot application.
+            OLD_IDS=$(docker ps --format '{{.ID}} {{.Ports}}' | awk -v port="$PORT" 'index($0, ":" port "->") { print $1 }')
+            if [ -n "$OLD_IDS" ]; then
+              for id in $OLD_IDS; do
+                echo "Replacing old container $id on host port $PORT"
+                docker rm -f "$id"
+              done
+            fi
+
+            # Also remove a stopped/failed container with the managed name.
+            docker rm -f "$NAME" 2>/dev/null || true
+
+            # Start this commit on the same public port every deployment.
             docker run -d \
-              --name "${{ env.CONTAINER_NAME }}" \
+              --name "$NAME" \
+              --label "app=omor-docker" \
               --restart unless-stopped \
-              -p "${{ env.APP_PORT }}:8080" \
+              -p "$PORT:8080" \
               "$IMAGE"
-            docker ps --filter "name=${{ env.CONTAINER_NAME }}"
+            docker ps --filter "name=^/$NAME$"
