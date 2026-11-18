@@ -9,7 +9,9 @@ public class docker_controller {
     @GetMapping("api/hello")
     public String showItems(){
 
-        return "Hello World sdv";
+        System.out.println("hello");
+
+        return "This is the 1st version of ci cd pipeliine";
     }
 
 }
